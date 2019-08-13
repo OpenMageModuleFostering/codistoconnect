@@ -330,8 +330,7 @@ class Codisto_Sync_Model_Observer
 	{
 		$transport = $observer->getEvent()->getTransport();
 		$payment = $observer->getEvent()->getPayment();
-		$paymentmethodinstance = is_object($payment) && $payment && method_exists($payment, 'getMethodInstance') ? $payment->getMethodInstance() : null;
-		$paymentmethod = is_object($paymentmethodinstance) && $paymentmethodinstance && method_exists($paymentmethodinstance, 'getCode') ? $paymentmethodinstance->getCode() : '';
+		$paymentmethod = $payment->getMethodInstance()->getCode();
 
 		if($paymentmethod == 'ebay' && Mage::getDesign()->getArea() == 'adminhtml')
 		{
@@ -457,7 +456,7 @@ class Codisto_Sync_Model_Observer
 
 	public function salesOrderShipmentTrackSaveAfter(Varien_Event_Observer $observer)
 	{
-		$track = $observer->getEvent()->getTrack();
+		$track = $this->getEvent()->getTrack();
 		$shipment = $track->getShipment();
 		$order = $shipment->getOrder();
 		$orderid = $order->getCodistoOrderid();
@@ -744,8 +743,6 @@ class Codisto_Sync_Model_Observer
 			}
 
 			$MerchantID = Zend_Json::decode(Mage::getStoreConfig('codisto/merchantid', 0));
-			if(is_array($MerchantID))
-				$MerchantID = $MerchantID[0];
 			$HostKey = Mage::getStoreConfig('codisto/hostkey', 0);
 			if(!in_array($MerchantID, $visited, true))
 				$merchants[] = array( 'merchantid' => $MerchantID, 'hostkey' => $HostKey, 'storeid' => 0);
@@ -793,6 +790,6 @@ class Codisto_Sync_Model_Observer
 
 	public function cancelOrderItem($observer)
 	{
-
+		
 	}
 }
