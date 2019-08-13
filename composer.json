@@ -1,0 +1,16 @@
+{
+    "name": "OpenMageModuleFostering/codistoconnect",
+    "type": "magento-module",
+    "license": "OSL-3.0",
+    "homepage": "",
+    "description": "Fastest, Easiest eBay listing",
+    "authors": [
+    {
+        "name": "Codisto",
+        "email": "hello@codisto.com"
+    }
+],
+    "suggest": {
+        "magento-hackathon/magento-composer-installer": "*"
+    }
+}
