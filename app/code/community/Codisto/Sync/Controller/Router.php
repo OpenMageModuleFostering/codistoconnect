@@ -37,7 +37,8 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 				throw new PDOException('(sqlite PDO Driver) please refer to <a target="#blank" href="http://help.codisto.com/article/64-what-is-pdoexception-could-not-find-driver">Codisto help article</a>', 999);
 			}
 
-			$createMerchant = Mage::helper('codistosync')->createMerchantwithLock(5.0);
+			//Can this request create a new merchant ?
+			$createMerchant  = Mage::helper('codistosync')->createMerchantwithLock();
 		}
 
 		//Something else happened such as PDO related exception
@@ -108,12 +109,6 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 				return true;
 			}
 
-			if(isset($_SESSION))
-			{
-				session_write_close();
-				unset($_SESSION);
-			}
-
 			$loggedIn = false;
 
 			if($request->getCookie('adminhtml'))
@@ -154,6 +149,7 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 			if(class_exists('Zend_Session', false) && Zend_Session::isStarted())
 			{
 				Zend_Session::writeClose();
+				Zend_Session::destroy();
 			}
 			if(isset($_SESSION))
 			{
@@ -165,11 +161,7 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 				$storematch = array();
 
 				// get store context from request
-				if($request->getQuery('storeid'))
-				{
-					$storeId = (int)$request->getQuery('storeid');
-				}
-				else if(preg_match('/^\/codisto\/ebaytab\/(\d+)\/\d+/', $path, $storematch))
+				if(preg_match('/^\/codisto\/ebaytab\/(\d+)\/\d+/', $path, $storematch))
 				{
 					$storeId = (int)$storematch[1];
 
@@ -180,44 +172,12 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 					$storeId = (int)$request->getCookie('storeid', '0');
 				}
 
-				$Merchants = array();
-				$HostKeys = array();
-
-				$stores = Mage::getModel('core/store')->getCollection();
-				foreach ($stores as $store)
-				{
-					$MerchantList = $store->getConfig('codisto/merchantid');
-
-					if($MerchantList)
-					{
-						$MerchantList = Zend_Json::decode($MerchantList);
-						if(is_array($MerchantList))
-						{
-							foreach($MerchantList as $MerchantID)
-							{
-								if(is_int($MerchantID))
-								{
-									array_push($Merchants, $MerchantID);
-									$HostKeys[$MerchantID] = $store->getConfig('codisto/hostkey');
-								}
-							}
-						}
-						else if(is_int($MerchantList))
-						{
-							$MerchantID = (int)$MerchantList;
-
-							array_push($Merchants, $MerchantID);
-							$HostKeys[$MerchantID] = $store->getConfig('codisto/hostkey');
-						}
-					}
-				}
-
-				$Merchants = array_unique($Merchants);
-
-				$MerchantID = null;
+				// look up merchantid/hostkey from store
+				$MerchantID = Mage::getStoreConfig('codisto/merchantid', $storeId);
+				$HostKey = Mage::getStoreConfig('codisto/hostkey', $storeId);
 
 				// register merchant on default admin store if config isn't present
-				if(empty($Merchants))
+				if(!isset($MerchantID) || !isset($HostKey))
 				{
 					try
 					{
@@ -233,60 +193,89 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 						}
 						else
 						{
-							$response->setBody('<!DOCTYPE html><html><head></head><body><h1>Unable to Register</h1><p>Sorry, we are currently unable to register your Codisto account.
-							In most cases, this is due to your server configuration being unable to make outbound communication to the Codisto servers.</p>
-							<p>This is usually easily fixed - please contact <a href="mailto:support@codisto.com">support@codisto.com</a> and our team will help to resolve the issue</p></body></html>');
+							$response->setBody('<!DOCTYPE html><html><head></head><body><h1>Unable to Register</h1><p>Sorry, we were unable to register your Codisto account,
+							please contact <a href="mailto:support@codisto.com">support@codisto.com</a> and our team will help to resolve the issue</p></body></html>');
 						}
 
 						return true;
 					}
-
-					if($MerchantID == null)
-					{
-						$response->setBody('<!DOCTYPE html><html><head></head><body><h1>Unable to Register</h1><p>Sorry, we are currently unable to register your Codisto account.
-						In most cases, this is due to your server configuration being unable to make outbound communication to the Codisto servers.</p>
-						<p>This is usually easily fixed - please contact <a href="mailto:support@codisto.com">support@codisto.com</a> and our team will help to resolve the issue</p></body></html>');
-
-						return true;
-					}
-
-					$Merchants[0] = $MerchantID;
-					$HostKey = Mage::getStoreConfig('codisto/hostkey');
-					$HostKeys[$MerchantID] = $HostKey;
 				}
 
-				if(count($Merchants) == 1)
+				if($MerchantID == null)
 				{
-					$MerchantID = $Merchants[0];
-					$HostKey = $HostKeys[$MerchantID];
+					$response->setBody('<!DOCTYPE html><html><head></head><body><h1>Unable to Register</h1><p>Sorry, we were unable to register your Codisto account,
+					please contact <a href="mailto:support@codisto.com">support@codisto.com</a> and our team will help to resolve the issue</p></body></html>');
 
-					$path = preg_replace('/(^\/codisto\/[^\/]+\/)(\d+\/?)/', '$1', $path);
+					return true;
 				}
-				else
+
+				$MerchantID = Zend_Json::decode($MerchantID);
+				if(is_array($MerchantID))
 				{
 					$merchantmatch = array();
 
-					if(preg_match('/^\/codisto\/(?:ebaytab|ebaypayment|ebaysale|ebayuser)\/(\d+)/', $path, $merchantmatch))
+					if(preg_match('/^\/codisto\/ebaytab\/(\d+)/', $path, $merchantmatch))
 					{
 						$requestedMerchantID = (int)$merchantmatch[1];
 
-						if(in_array($requestedMerchantID, $Merchants))
+						if(in_array($requestedMerchantID, $MerchantID))
 						{
 							$MerchantID = $requestedMerchantID;
 						}
 						else
 						{
-							$MerchantID = $Merchants[0];
+							$MerchantID = $MerchantID[0];
 						}
 
-						$path = preg_replace('/(^\/codisto\/(?:ebaytab|ebaypayment|ebaysale|ebayuser)\/)(\d+\/?)/', '$1', $path);
+						$path = preg_replace('/(^\/codisto\/ebaytab\/)(\d+\/?)/', '$1', $path);
+					}
+					else if(preg_match('/^\/codisto\/ebaypayment\/(\d+)/', $path, $merchantmatch))
+					{
+						$requestedMerchantID = (int)$merchantmatch[1];
+						if(in_array($requestedMerchantID, $MerchantID))
+						{
+							$MerchantID = $requestedMerchantID;
+						}
+						else
+						{
+							$MerchantID = $MerchantID[0];
+						}
+						$path = preg_replace('/(^\/codisto\/ebaypayment\/)(\d+\/?)/', '$1', $path);
+					}
+					else if(preg_match('/^\/codisto\/ebaysale\/(\d+)/', $path, $merchantmatch))
+					{
+						$requestedMerchantID = (int)$merchantmatch[1];
+						if(in_array($requestedMerchantID, $MerchantID))
+						{
+							$MerchantID = $requestedMerchantID;
+						}
+						else
+						{
+							$MerchantID = $MerchantID[0];
+						}
+						$path = preg_replace('/(^\/codisto\/ebaysale\/)(\d+\/?)/', '$1', $path);
+					}
+					else if(preg_match('/^\/codisto\/ebayuser\/(\d+)/', $path, $merchantmatch))
+					{
+						$requestedMerchantID = (int)$merchantmatch[1];
+						if(in_array($requestedMerchantID, $MerchantID))
+						{
+							$MerchantID = $requestedMerchantID;
+						}
+						else
+						{
+							$MerchantID = $MerchantID[0];
+						}
+						$path = preg_replace('/(^\/codisto\/ebayuser\/)(\d+\/?)/', '$1', $path);
 					}
 					else
 					{
-						$MerchantID = $Merchants[0];
+						$MerchantID = $MerchantID[0];
 					}
-
-					$HostKey = $HostKeys[$MerchantID];
+				}
+				else
+				{
+					$path = preg_replace('/(^\/codisto\/ebaytab\/)(\d+\/?)/', '$1', $path);
 				}
 
 				// product page iframe
@@ -311,7 +300,7 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 					return true;
 				}
 
-				$remotePath = preg_replace('/^\/codisto\/\/?|key\/[a-zA-z0-9]*\/?/', '', $path);
+				$remotePath = preg_replace('/^\/codisto\/\/?|key\/[a-zA-z0-9]*\//', '', $path);
 				if($MerchantID)
 				{
 					$remoteUrl = 'https://ui.codisto.com/' . $MerchantID . '/' . $remotePath;
