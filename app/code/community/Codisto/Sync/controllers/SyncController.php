@@ -37,12 +37,14 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 	public function indexAction()
 	{
-
 		set_time_limit(0);
 
 		@ini_set('zlib.output_compression', 'Off');
 		@ini_set('output_buffering', 'Off');
 		@ini_set('output_handler', '');
+		@ini_set('display_errors', 1);
+		@ini_set('display_startup_errors', 1);
+		@error_reporting(E_ALL);
 
 		ignore_user_abort(true);
 
@@ -118,7 +120,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 								$db = new PDO('sqlite:' . $tmpDb);
 
-								$helper->prepareSqliteDatabase($db);
+								$helper->prepareSqliteDatabase($db, 60 );
 
 								$db->exec('ATTACH DATABASE \''.$syncDb.'\' AS SyncDB');
 
@@ -146,6 +148,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 									$db->exec('CREATE TABLE SKUMatrix AS SELECT * FROM SyncDb.SKUMatrix WHERE ProductExternalReference IN (SELECT ExternalReference FROM Product)');
 									$db->exec('CREATE TABLE ProductOptionValue AS SELECT DISTINCT * FROM SyncDb.ProductOptionValue');
 									$db->exec('CREATE TABLE ProductHTML AS SELECT * FROM SyncDb.ProductHTML WHERE ProductExternalReference IN (SELECT ExternalReference FROM Product)');
+									$db->exec('CREATE TABLE ProductRelated AS SELECT * FROM SyncDb.ProductRelated WHERE ProductExternalReference IN (SELECT ExternalReference FROM Product)');
 									$db->exec('CREATE TABLE Attribute AS SELECT * FROM SyncDb.Attribute');
 									$db->exec('CREATE TABLE AttributeGroup AS SELECT * FROM SyncDb.AttributeGroup');
 									$db->exec('CREATE TABLE AttributeGroupMap AS SELECT * FROM SyncDb.AttributeGroupMap');
@@ -182,8 +185,6 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 							}
 							else
 							{
-								$sendFullDb = true;
-
 								if(!$request->getQuery('first') &&
 									is_string($request->getQuery('incremental')))
 								{
@@ -191,11 +192,21 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 									$db = new PDO('sqlite:' . $tmpDb);
 
-									$helper->prepareSqliteDatabase($db);
+									$helper->prepareSqliteDatabase( $db, 60 );
 
 									$db->exec('ATTACH DATABASE \''.$syncDb.'\' AS SyncDB');
 
 									$db->exec('BEGIN EXCLUSIVE TRANSACTION');
+
+									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'Sync\') THEN -1 ELSE 0 END');
+									$syncComplete = $qry->fetchColumn();
+									$qry->closeCursor();
+									if(!$syncComplete)
+									{
+										@unlink($tmpDb);
+
+										throw new Exception('Attempting to download partial sync db - incremental');
+									}
 
 									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'ProductChange\') THEN -1 ELSE 0 END');
 									$productChange = $qry->fetchColumn();
@@ -216,6 +227,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 											$db->exec('CREATE TABLE SKUMatrix AS SELECT * FROM SyncDb.SKUMatrix WHERE ProductExternalReference IN (SELECT ExternalReference FROM SyncDb.ProductChange)');
 											$db->exec('CREATE TABLE ProductOptionValue AS SELECT DISTINCT * FROM SyncDb.ProductOptionValue');
 											$db->exec('CREATE TABLE ProductHTML AS SELECT * FROM SyncDb.ProductHTML WHERE ProductExternalReference IN (SELECT ExternalReference FROM SyncDb.ProductChange)');
+											$db->exec('CREATE TABLE ProductRelated AS SELECT * FROM SyncDb.ProductRelated WHERE ProductExternalReference IN (SELECT ExternalReference FROM SyncDb.ProductChange)');
 											$db->exec('CREATE TABLE Attribute AS SELECT * FROM SyncDb.Attribute');
 											$db->exec('CREATE TABLE AttributeGroup AS SELECT * FROM SyncDb.AttributeGroup');
 											$db->exec('CREATE TABLE AttributeGroupMap AS SELECT * FROM SyncDb.AttributeGroupMap');
@@ -253,7 +265,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 										if($ordersAvailable)
 										{
-											$db->exec('CREATE TABLE [Order] AS SELECT * FROM SyncDb.[Order] WHERE ID IN (SELECT ExternalReference FROM SyncDb.OrderChange)');
+											$db->exec('CREATE TABLE [Order] AS SELECT * FROM SyncDb.[Order] WHERE ExternalReference = \'\' OR ExternalReference IN (SELECT ExternalReference FROM SyncDb.OrderChange)');
 											$db->exec('CREATE TABLE OrderChange AS SELECT * FROM SyncDb.OrderChange');
 										}
 									}
@@ -265,13 +277,27 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 									$this->sendFile($tmpDb, 'incremental');
 
 									unlink($tmpDb);
-
-									$sendFullDb = false;
 								}
-
-								if($sendFullDb)
+								else
 								{
-									$this->sendFile($syncDb);
+									$syncComplete = true;
+
+									if(!$request->getQuery('first'))
+									{
+										$db = new PDO('sqlite:' . $syncDb);
+										$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'Sync\') THEN -1 ELSE 0 END');
+										$syncComplete = $qry->fetchColumn();
+										$qry->closeCursor();
+									}
+
+									if($syncComplete)
+									{
+										$this->sendFile($syncDb);
+									}
+									else
+									{
+										throw new Exception('Attempting to download partial sync db');
+									}
 								}
 							}
 						}
@@ -334,14 +360,19 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 							if(!$configurableCount || !is_numeric($configurableCount))
 								$configurableCount = $this->defaultConfigurableCount;
 
-
 							$simpleCount = (int)$request->getQuery('simplecount');
 							if(!$simpleCount || !is_numeric($simpleCount))
 								$simpleCount = $this->defaultSimpleCount;
 
+							if($configurableCount > 0)
+							{
+								$result = $syncObject->SyncChunk($syncDb, 0, $configurableCount, $storeId, true);
+							}
 
-							$result = $syncObject->SyncChunk($syncDb, 0, $configurableCount, $storeId, true);
-							$result = $syncObject->SyncChunk($syncDb, $simpleCount, 0, $storeId, true);
+							if($simpleCount > 0)
+							{
+								$result = $syncObject->SyncChunk($syncDb, $simpleCount, 0, $storeId, true);
+							}
 
 							if($result == 'complete')
 							{
@@ -352,7 +383,8 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 								{
 									try
 									{
-										$indexer->changeStatus(Mage_Index_Model_Process::STATUS_PENDING);
+										if($indexer)
+											$indexer->changeStatus(Mage_Index_Model_Process::STATUS_PENDING);
 										break;
 									}
 									catch(Exception $e)
@@ -386,6 +418,15 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 						$response->sendResponse();
 					}
 					die;
+
+				case 'EXECUTEINCREMENT':
+
+					if(!$helper->getTriggerMode())
+					{
+						$this->sendPlainResponse($response, 400, 'Bad Request', 'No Action');
+						$response->sendResponse();
+						die;
+					}
 
 				case 'EXECUTECHUNK':
 
@@ -465,7 +506,8 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 								{
 									try
 									{
-										$indexer->changeStatus(Mage_Index_Model_Process::STATUS_PENDING);
+										if($indexer)
+											$indexer->changeStatus(Mage_Index_Model_Process::STATUS_PENDING);
 										break;
 									}
 									catch(Exception $e)
@@ -477,6 +519,14 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 										continue;
 									}
 								}
+
+								try
+								{
+									$helper->cleanSyncFolder();
+								}
+								catch(Exception $e)
+								{
+								}
 							}
 
 							$this->sendPlainResponse($response, 200, 'OK', $result);
@@ -484,8 +534,29 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 						}
 						catch(Exception $e)
 						{
-							$this->sendExceptionError($response, $e);
-							$response->sendResponse();
+							if(property_exists($e, 'errorInfo') &&
+								$e->errorInfo[0] == 'HY000' &&
+								$e->errorInfo[1] == 5 &&
+								$e->errorInfo[2] == 'database is locked')
+							{
+								$this->sendPlainResponse($response, 200, 'OK', 'throttle');
+								$response->sendResponse();
+							}
+							else if(property_exists($e, 'errorInfo') &&
+									$e->errorInfo[0] == 'HY000' &&
+									$e->errorInfo[1] == 8 &&
+									$e->errorInfo[2] == 'attempt to write a readonly database')
+							{
+								if(file_exists($syncDb))
+									unlink($syncDb);
+								$this->sendExceptionError($response, $e);
+								$response->sendResponse();
+							}
+							else
+							{
+								$this->sendExceptionError($response, $e);
+								$response->sendResponse();
+							}
 						}
 					}
 					else
@@ -545,7 +616,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 							$db = new PDO('sqlite:' . $tmpDb);
 
-							$helper->prepareSqliteDatabase($db);
+							$helper->prepareSqliteDatabase( $db, 60 );
 
 							$db->exec('ATTACH DATABASE \''.$syncDb.'\' AS SyncDB');
 
@@ -590,7 +661,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 							$db = new PDO('sqlite:' . $tmpDb);
 
-							$helper->prepareSqliteDatabase($db);
+							$helper->prepareSqliteDatabase( $db, 60 );
 
 							$db->exec('ATTACH DATABASE \''.$syncDb.'\' AS SyncDB');
 
@@ -633,7 +704,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 						}
 
-						$this->sendPlainResponse($response, 200, 'OK', $result);
+						$this->sendPlainResponse($response, 200, 'OK', 'complete');
 						$response->sendResponse();
 					}
 					else
@@ -666,7 +737,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 							$db = new PDO('sqlite:' . $tmpDb);
 
-							$helper->prepareSqliteDatabase($db);
+							$helper->prepareSqliteDatabase( $db, 60 );
 
 							$db->exec('ATTACH DATABASE \''.$syncDb.'\' AS SyncDB');
 
@@ -754,7 +825,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 									$db = new PDO('sqlite:' . $tmpDb);
 
-									$helper->prepareSqliteDatabase($db, 1024);
+									$helper->prepareSqliteDatabase( $db, 60, 4096 );
 
 									$db->exec('ATTACH DATABASE \''.$templateDb.'\' AS Source');
 									$db->exec('CREATE TABLE File AS SELECT * FROM Source.File WHERE Changed != 0');
@@ -803,6 +874,33 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 							$this->sendExceptionError($response, $e);
 							$response->sendResponse();
 						}
+					}
+					else
+					{
+						$this->sendSecurityError($response);
+						$response->sendResponse();
+					}
+					die;
+
+				case 'NOTIFICATION':
+
+					if($this->checkHash($helper, $server, $storeId))
+					{
+						$title = $request->getPost('title');
+						$description = $request->getPost('description');
+						$url = $request->getPost('url');
+						$severity = (int)$request->getPost('severity');
+
+						if(Mage::getResourceModel('adminnotification/inbox_collection')->addFieldToFilter('url', $url)->addFieldToFilter('is_remove', 0)->getSize() == 0)
+						{
+							Mage::getModel('adminnotification/inbox')->add($severity, $title, $description, $url);
+							$this->sendJsonResponse($response, 200, 'OK', array( 'ack' => 'ok' ) );
+						}
+						else
+						{
+							$this->sendJsonResponse($response, 200, 'OK', array( 'ack' => 'warning', 'message' => 'already present' ) );
+						}
+						$response->sendResponse();
 					}
 					else
 					{

@@ -37,8 +37,7 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 				throw new PDOException('(sqlite PDO Driver) please refer to <a target="#blank" href="http://help.codisto.com/article/64-what-is-pdoexception-could-not-find-driver">Codisto help article</a>', 999);
 			}
 
-			//Can this request create a new merchant ?
-			$createMerchant  = Mage::helper('codistosync')->createMerchantwithLock();
+			$createMerchant = Mage::helper('codistosync')->createMerchantwithLock(5.0);
 		}
 
 		//Something else happened such as PDO related exception
@@ -109,6 +108,12 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 				return true;
 			}
 
+			if(isset($_SESSION))
+			{
+				session_write_close();
+				unset($_SESSION);
+			}
+
 			$loggedIn = false;
 
 			if($request->getCookie('adminhtml'))
@@ -149,7 +154,6 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 			if(class_exists('Zend_Session', false) && Zend_Session::isStarted())
 			{
 				Zend_Session::writeClose();
-				Zend_Session::destroy();
 			}
 			if(isset($_SESSION))
 			{
@@ -193,8 +197,9 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 						}
 						else
 						{
-							$response->setBody('<!DOCTYPE html><html><head></head><body><h1>Unable to Register</h1><p>Sorry, we were unable to register your Codisto account,
-							please contact <a href="mailto:support@codisto.com">support@codisto.com</a> and our team will help to resolve the issue</p></body></html>');
+							$response->setBody('<!DOCTYPE html><html><head></head><body><h1>Unable to Register</h1><p>Sorry, we are currently unable to register your Codisto account.
+							In most cases, this is due to your server configuration being unable to make outbound communication to the Codisto servers.</p>
+							<p>This is usually easily fixed - please contact <a href="mailto:support@codisto.com">support@codisto.com</a> and our team will help to resolve the issue</p></body></html>');
 						}
 
 						return true;
@@ -203,8 +208,9 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 
 				if($MerchantID == null)
 				{
-					$response->setBody('<!DOCTYPE html><html><head></head><body><h1>Unable to Register</h1><p>Sorry, we were unable to register your Codisto account,
-					please contact <a href="mailto:support@codisto.com">support@codisto.com</a> and our team will help to resolve the issue</p></body></html>');
+					$response->setBody('<!DOCTYPE html><html><head></head><body><h1>Unable to Register</h1><p>Sorry, we are currently unable to register your Codisto account.
+					In most cases, this is due to your server configuration being unable to make outbound communication to the Codisto servers.</p>
+					<p>This is usually easily fixed - please contact <a href="mailto:support@codisto.com">support@codisto.com</a> and our team will help to resolve the issue</p></body></html>');
 
 					return true;
 				}
@@ -300,7 +306,7 @@ class Codisto_Sync_Controller_Router extends Mage_Core_Controller_Varien_Router_
 					return true;
 				}
 
-				$remotePath = preg_replace('/^\/codisto\/\/?|key\/[a-zA-z0-9]*\//', '', $path);
+				$remotePath = preg_replace('/^\/codisto\/\/?|key\/[a-zA-z0-9]*\/?/', '', $path);
 				if($MerchantID)
 				{
 					$remoteUrl = 'https://ui.codisto.com/' . $MerchantID . '/' . $remotePath;
