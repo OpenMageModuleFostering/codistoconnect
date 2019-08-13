@@ -42,6 +42,9 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 		@ini_set('zlib.output_compression', 'Off');
 		@ini_set('output_buffering', 'Off');
 		@ini_set('output_handler', '');
+		@ini_set('display_errors', 1);
+		@ini_set('display_startup_errors', 1);
+		@error_reporting(E_ALL);
 
 		ignore_user_abort(true);
 
@@ -182,8 +185,6 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 							}
 							else
 							{
-								$sendFullDb = true;
-
 								if(!$request->getQuery('first') &&
 									is_string($request->getQuery('incremental')))
 								{
@@ -197,7 +198,17 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 									$db->exec('BEGIN EXCLUSIVE TRANSACTION');
 
-									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'ProductChange\') THEN -1 ELSE 0 END');
+									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type = \'table\' AND name = \'Sync\') THEN -1 ELSE 0 END');
+									$syncComplete = $qry->fetchColumn();
+									$qry->closeCursor();
+									if(!$syncComplete)
+									{
+										@unlink($tmpDb);
+
+										throw new Exception('Attempting to download partial sync db - incremental');
+									}
+
+									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type = \'table\' AND name = \'ProductChange\') THEN -1 ELSE 0 END');
 									$productChange = $qry->fetchColumn();
 									$qry->closeCursor();
 									if($productChange)
@@ -227,7 +238,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 										}
 									}
 
-									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'CategoryChange\') THEN -1 ELSE 0 END');
+									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type = \'table\' AND name = \'CategoryChange\') THEN -1 ELSE 0 END');
 									$categoryChange = $qry->fetchColumn();
 									$qry->closeCursor();
 									if($categoryChange)
@@ -243,7 +254,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 										}
 									}
 
-									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'OrderChange\') THEN -1 ELSE 0 END');
+									$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM SyncDb.sqlite_master WHERE type = \'table\' AND name = \'OrderChange\') THEN -1 ELSE 0 END');
 									$orderChange = $qry->fetchColumn();
 									$qry->closeCursor();
 									if($orderChange)
@@ -254,7 +265,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 										if($ordersAvailable)
 										{
-											$db->exec('CREATE TABLE [Order] AS SELECT * FROM SyncDb.[Order] WHERE ID IN (SELECT ExternalReference FROM SyncDb.OrderChange)');
+											$db->exec('CREATE TABLE [Order] AS SELECT * FROM SyncDb.[Order] WHERE ExternalReference = \'\' OR ExternalReference IN (SELECT ExternalReference FROM SyncDb.OrderChange)');
 											$db->exec('CREATE TABLE OrderChange AS SELECT * FROM SyncDb.OrderChange');
 										}
 									}
@@ -266,13 +277,28 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 									$this->sendFile($tmpDb, 'incremental');
 
 									unlink($tmpDb);
-
-									$sendFullDb = false;
 								}
-
-								if($sendFullDb)
+								else
 								{
-									$this->sendFile($syncDb);
+									$syncComplete = true;
+
+									if(!$request->getQuery('first'))
+									{
+										$db = new PDO('sqlite:' . $syncDb);
+										$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+										$qry = $db->query('SELECT CASE WHEN EXISTS(SELECT 1 FROM sqlite_master WHERE type = \'table\' AND name = \'Sync\') THEN -1 ELSE 0 END');
+										$syncComplete = $qry->fetchColumn();
+										$qry->closeCursor();
+									}
+
+									if($syncComplete)
+									{
+										$this->sendFile($syncDb);
+									}
+									else
+									{
+										throw new Exception('Attempting to download partial sync db');
+									}
 								}
 							}
 						}
@@ -517,6 +543,16 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 								$this->sendPlainResponse($response, 200, 'OK', 'throttle');
 								$response->sendResponse();
 							}
+							else if(property_exists($e, 'errorInfo') &&
+									$e->errorInfo[0] == 'HY000' &&
+									$e->errorInfo[1] == 8 &&
+									$e->errorInfo[2] == 'attempt to write a readonly database')
+							{
+								if(file_exists($syncDb))
+									unlink($syncDb);
+								$this->sendExceptionError($response, $e);
+								$response->sendResponse();
+							}
 							else
 							{
 								$this->sendExceptionError($response, $e);
@@ -543,7 +579,7 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 
 							$tmpDb = $helper->getSyncPathTemp('sync');
 
-							file_put_contents($tmpDb, $request->getRawBody());
+							file_put_contents($tmpDb, file_get_contents('php://input'));
 
 							$syncObject->SyncChangeComplete($syncDb, $tmpDb, $storeId);
 
@@ -839,6 +875,33 @@ class Codisto_Sync_SyncController extends Mage_Core_Controller_Front_Action
 							$this->sendExceptionError($response, $e);
 							$response->sendResponse();
 						}
+					}
+					else
+					{
+						$this->sendSecurityError($response);
+						$response->sendResponse();
+					}
+					die;
+
+				case 'NOTIFICATION':
+
+					if($this->checkHash($helper, $server, $storeId))
+					{
+						$title = $request->getPost('title');
+						$description = $request->getPost('description');
+						$url = $request->getPost('url');
+						$severity = (int)$request->getPost('severity');
+
+						if(Mage::getResourceModel('adminnotification/inbox_collection')->addFieldToFilter('url', $url)->addFieldToFilter('is_remove', 0)->getSize() == 0)
+						{
+							Mage::getModel('adminnotification/inbox')->add($severity, $title, $description, $url);
+							$this->sendJsonResponse($response, 200, 'OK', array( 'ack' => 'ok' ) );
+						}
+						else
+						{
+							$this->sendJsonResponse($response, 200, 'OK', array( 'ack' => 'warning', 'message' => 'already present' ) );
+						}
+						$response->sendResponse();
 					}
 					else
 					{

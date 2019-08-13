@@ -12,10 +12,10 @@
  * obtain it through the world-wide-web, please send an email
  * to license@magentocommerce.com so we can send you a copy immediately.
  *
- * @category    Codisto
- * @package     Codisto_Sync
+ * @category	Codisto
+ * @package	 Codisto_Sync
  * @copyright   Copyright (c) 2015 On Technology Pty. Ltd. (http://codisto.com/)
- * @license     http://opensource.org/licenses/osl-3.0.php  Open Software License (OSL 3.0)
+ * @license	 http://opensource.org/licenses/osl-3.0.php  Open Software License (OSL 3.0)
  */
 
 class Codisto_Sync_Model_Sync
@@ -38,6 +38,8 @@ class Codisto_Sync_Model_Sync
 
 	private $availableProductFields;
 
+	private $useSimplePrice = false;
+
 	public function __construct()
 	{
 		if(method_exists('Mage', 'getEdition'))
@@ -47,6 +49,14 @@ class Codisto_Sync_Model_Sync
 		else
 		{
 			$edition = 'Community';
+		}
+
+		//getFinalPrice() method still returns the configurable product price with this plugin installed
+		//this check ensures the simple product price used when this plugin is used
+		if(Mage::helper('core')->isModuleEnabled('Ayasoftware_SimpleProductPricing')) {
+			$this->useSimplePrice = true;
+		} else {
+			$this->useSimplePrice = false;
 		}
 
 		$version = Mage::getVersionInfo();
@@ -82,52 +92,18 @@ class Codisto_Sync_Model_Sync
 
 	private function AvailableProductFields($selectArr) {
 
-		$attributes = array();
-        $productAttrs = Mage::getResourceModel('catalog/product_attribute_collection');
-        foreach ($productAttrs as $productAttr) {
-            $attributes[] = $productAttr->getAttributeCode();
-        }
-		$selectAvailable = array();
-		foreach($attributes as $attr){
-			if (in_array($attr, $selectArr)) {
-			    $selectAvailable[] = $attr;
-			}
-		}
-		return $selectAvailable;
+		$attributes = array('entity_id');
 
-	}
-
-	private function FilesInDir($dir, $prefix = '')
-	{
-		$dir = rtrim($dir, '\\/');
-		$result = array();
-
-		try
+		$productAttrs = Mage::getResourceModel('catalog/product_attribute_collection');
+		foreach ($productAttrs as $productAttr)
 		{
-			if(is_dir($dir))
+			if( in_array( $productAttr->getAttributeCode(), $selectArr ) )
 			{
-				$scan = @scandir($dir);
-
-				if($scan !== false)
-				{
-					foreach ($scan as $f) {
-						if ($f !== '.' and $f !== '..') {
-							if (is_dir("$dir/$f")) {
-								$result = array_merge($result, $this->FilesInDir("$dir/$f", "$f/"));
-							} else {
-								$result[] = $prefix.$f;
-							}
-						}
-					}
-				}
+				$attributes[] = $productAttr->getAttributeCode();
 			}
 		}
-		catch(Exception $e)
-		{
 
-		}
-
-		return $result;
+		return $attributes;
 	}
 
 	public function TemplateRead($templateDb)
@@ -259,9 +235,6 @@ class Codisto_Sync_Model_Sync
 	{
 		$db = $this->GetSyncDb($syncDb, 60 );
 
-		$args = array();
-		$args[] = $id;
-
 		$db->exec('BEGIN EXCLUSIVE TRANSACTION');
 
 		$db->exec('CREATE TABLE IF NOT EXISTS CategoryDelete(ExternalReference text NOT NULL PRIMARY KEY);'.
@@ -277,22 +250,6 @@ class Codisto_Sync_Model_Sync
 		$store = Mage::app()->getStore($storeId);
 
 		$db = $this->GetSyncDb($syncDb, 60 );
-
-		$insertCategoryProduct = $db->prepare('INSERT OR IGNORE INTO CategoryProduct(ProductExternalReference, CategoryExternalReference, Sequence) VALUES(?,?,?)');
-		$insertProduct = $db->prepare('INSERT INTO Product(ExternalReference, Type, Code, Name, Price, ListPrice, TaxClass, Description, Enabled, StockControl, StockLevel, Weight, InStore) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-		$checkProduct = $db->prepare('SELECT CASE WHEN EXISTS(SELECT 1 FROM Product WHERE ExternalReference = ?) THEN 1 ELSE 0 END');
-		$insertSKU = $db->prepare('INSERT OR IGNORE INTO SKU(ExternalReference, Code, ProductExternalReference, Name, StockControl, StockLevel, Price, Enabled, InStore) VALUES(?,?,?,?,?,?,?,?,?)');
-		$insertSKULink = $db->prepare('INSERT OR REPLACE INTO SKULink (SKUExternalReference, ProductExternalReference, Price) VALUES (?, ?, ?)');
-		$insertSKUMatrix = $db->prepare('INSERT INTO SKUMatrix(SKUExternalReference, ProductExternalReference, Code, OptionName, OptionValue, ProductOptionExternalReference, ProductOptionValueExternalReference) VALUES(?,?,?,?,?,?,?)');
-		$insertImage = $db->prepare('INSERT INTO ProductImage(ProductExternalReference, URL, Tag, Sequence, Enabled) VALUES(?,?,?,?,?)');
-		$insertProductHTML = $db->prepare('INSERT OR IGNORE INTO ProductHTML(ProductExternalReference, Tag, HTML) VALUES (?, ?, ?)');
-		$insertProductRelated = $db->prepare('INSERT OR IGNORE INTO ProductRelated (RelatedProductExternalReference, ProductExternalReference) VALUES (?, ?)');
-		$insertAttribute = $db->prepare('INSERT OR REPLACE INTO Attribute(ID, Code, Label, Type, Input) VALUES (?, ?, ?, ?, ?)');
-		$insertAttributeGroup = $db->prepare('INSERT OR IGNORE INTO AttributeGroup(ID, Name) VALUES(?, ?)');
-		$insertAttributeGroupMap = $db->prepare('INSERT OR IGNORE INTO AttributeGroupMap(GroupID, AttributeID) VALUES(?,?)');
-		$insertProductAttribute = $db->prepare('INSERT OR IGNORE INTO ProductAttributeValue(ProductExternalReference, AttributeID, Value) VALUES (?, ?, ?)');
-		$insertProductQuestion = $db->prepare('INSERT OR REPLACE INTO ProductQuestion(ExternalReference, ProductExternalReference, Name, Type, Sequence) VALUES (?, ?, ?, ?, ?)');
-		$insertProductAnswer = $db->prepare('INSERT INTO ProductQuestionAnswer(ProductQuestionExternalReference, Value, PriceModifier, SKUModifier, Sequence) VALUES (?, ?, ?, ?, ?)');
 
 		$this->productsProcessed = array();
 
@@ -313,13 +270,22 @@ class Codisto_Sync_Model_Sync
 								->columns(array('codisto_in_store'=> new Zend_Db_Expr('CASE WHEN `e`.entity_id IN (SELECT product_id FROM `'.$catalogWebsiteName.'` WHERE website_id IN (SELECT website_id FROM `'.$storeName.'` WHERE store_id = '.$storeId.' OR EXISTS(SELECT 1 FROM `'.$storeName.'` WHERE store_id = '.$storeId.' AND website_id = 0))) THEN -1 ELSE 0 END')))
 								->where($sqlCheckModified);
 
-		// Simple Products not participating as configurable skus
+		// Simple Products
 		$simpleProducts = $this->getProductCollection()
 							->addAttributeToSelect($this->availableProductFields, 'left')
 							->addAttributeToFilter('type_id', array('eq' => 'simple'))
 							->addAttributeToFilter('entity_id', array('in' => $ids));
 
 		$simpleProducts->getSelect()
+								->columns(array('codisto_in_store'=> new Zend_Db_Expr('CASE WHEN `e`.entity_id IN (SELECT product_id FROM `'.$catalogWebsiteName.'` WHERE website_id IN (SELECT website_id FROM `'.$storeName.'` WHERE store_id = '.$storeId.' OR EXISTS(SELECT 1 FROM `'.$storeName.'` WHERE store_id = '.$storeId.' AND website_id = 0))) THEN -1 ELSE 0 END')));
+
+		// Virtual Products
+		$virtualProducts = $this->getProductCollection()
+							->addAttributeToSelect($this->availableProductFields, 'left')
+							->addAttributeToFilter('type_id', array('eq' => 'virtual'))
+							->addAttributeToFilter('entity_id', array('in' => $ids));
+
+		$virtualProducts->getSelect()
 								->columns(array('codisto_in_store'=> new Zend_Db_Expr('CASE WHEN `e`.entity_id IN (SELECT product_id FROM `'.$catalogWebsiteName.'` WHERE website_id IN (SELECT website_id FROM `'.$storeName.'` WHERE store_id = '.$storeId.' OR EXISTS(SELECT 1 FROM `'.$storeName.'` WHERE store_id = '.$storeId.' AND website_id = 0))) THEN -1 ELSE 0 END')));
 
 		// Grouped products
@@ -334,17 +300,50 @@ class Codisto_Sync_Model_Sync
 
 		$db->exec('BEGIN EXCLUSIVE TRANSACTION');
 
-		$db->exec('DELETE FROM Product WHERE ExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM ProductImage WHERE ProductExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM ProductHTML WHERE ProductExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM ProductRelated WHERE ProductExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM ProductAttributeValue WHERE ProductExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM ProductQuestionAnswer WHERE ProductQuestionExternalReference IN (SELECT ExternalReference FROM ProductQuestion WHERE ProductExternalReference IN ('.implode(',', $ids).'))');
-		$db->exec('DELETE FROM ProductQuestion WHERE ProductExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM SKUMatrix WHERE ProductExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM SKULink WHERE ProductExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM SKU WHERE ProductExternalReference IN ('.implode(',', $ids).')');
-		$db->exec('DELETE FROM CategoryProduct WHERE ProductExternalReference IN ('.implode(',', $ids).')');
+		$db->exec('CREATE TEMPORARY TABLE TmpChanged (entity_id text NOT NULL PRIMARY KEY)');
+		foreach($ids as $id)
+		{
+			$db->exec('INSERT INTO TmpChanged (entity_id) VALUES('.$id.')');
+		}
+
+		try
+		{
+			$db->exec('DELETE FROM ProductDelete WHERE ExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		}
+		catch(Exception $e)
+		{
+
+		}
+		$db->exec('DELETE FROM Product WHERE ExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM ProductImage WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM ProductHTML WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM ProductRelated WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM ProductAttributeValue WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM ProductQuestionAnswer WHERE ProductQuestionExternalReference IN (SELECT ExternalReference FROM ProductQuestion WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged))');
+		$db->exec('DELETE FROM ProductQuestion WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM SKUMatrix WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM SKULink WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM SKU WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+		$db->exec('DELETE FROM CategoryProduct WHERE ProductExternalReference IN (SELECT entity_id FROM TmpChanged)');
+
+		$db->exec('DROP TABLE TmpChanged');
+
+		$insertCategoryProduct = $db->prepare('INSERT OR IGNORE INTO CategoryProduct(ProductExternalReference, CategoryExternalReference, Sequence) VALUES(?,?,?)');
+		$insertProduct = $db->prepare('INSERT INTO Product(ExternalReference, Type, Code, Name, Price, ListPrice, TaxClass, Description, Enabled, StockControl, StockLevel, Weight, InStore) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+		$checkProduct = $db->prepare('SELECT CASE WHEN EXISTS(SELECT 1 FROM Product WHERE ExternalReference = ?) THEN 1 ELSE 0 END');
+		$insertSKU = $db->prepare('INSERT OR IGNORE INTO SKU(ExternalReference, Code, ProductExternalReference, Name, StockControl, StockLevel, Price, Enabled, InStore) VALUES(?,?,?,?,?,?,?,?,?)');
+		$insertSKULink = $db->prepare('INSERT OR REPLACE INTO SKULink (SKUExternalReference, ProductExternalReference, Price) VALUES (?, ?, ?)');
+		$insertSKUMatrix = $db->prepare('INSERT INTO SKUMatrix(SKUExternalReference, ProductExternalReference, Code, OptionName, OptionValue, ProductOptionExternalReference, ProductOptionValueExternalReference) VALUES(?,?,?,?,?,?,?)');
+		$insertImage = $db->prepare('INSERT INTO ProductImage(ProductExternalReference, URL, Tag, Sequence, Enabled) VALUES(?,?,?,?,?)');
+		$insertProductHTML = $db->prepare('INSERT OR IGNORE INTO ProductHTML(ProductExternalReference, Tag, HTML) VALUES (?, ?, ?)');
+		$insertProductRelated = $db->prepare('INSERT OR IGNORE INTO ProductRelated (RelatedProductExternalReference, ProductExternalReference) VALUES (?, ?)');
+		$insertAttribute = $db->prepare('INSERT OR REPLACE INTO Attribute(ID, Code, Label, Type, Input) VALUES (?, ?, ?, ?, ?)');
+		$insertAttributeGroup = $db->prepare('INSERT OR IGNORE INTO AttributeGroup(ID, Name) VALUES(?, ?)');
+		$insertAttributeGroupMap = $db->prepare('INSERT OR IGNORE INTO AttributeGroupMap(GroupID, AttributeID) VALUES(?,?)');
+		$insertProductAttribute = $db->prepare('INSERT OR IGNORE INTO ProductAttributeValue(ProductExternalReference, AttributeID, Value) VALUES (?, ?, ?)');
+		$insertProductAttributeDefault = $db->prepare('INSERT OR IGNORE INTO ProductAttributeDefaultValue(ProductExternalReference, AttributeID, Value) VALUES (?, ?, ?)');
+		$insertProductQuestion = $db->prepare('INSERT OR REPLACE INTO ProductQuestion(ExternalReference, ProductExternalReference, Name, Type, Sequence) VALUES (?, ?, ?, ?, ?)');
+		$insertProductAnswer = $db->prepare('INSERT INTO ProductQuestionAnswer(ProductQuestionExternalReference, Value, PriceModifier, SKUModifier, Sequence) VALUES (?, ?, ?, ?, ?)');
 
 		Mage::getSingleton('core/resource_iterator')->walk($configurableProducts->getSelect(), array(array($this, 'SyncConfigurableProductData')),
 			array(
@@ -363,6 +362,7 @@ class Codisto_Sync_Model_Sync
 				'preparedattributegroupStatement' => $insertAttributeGroup,
 				'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 				'preparedproductattributeStatement' => $insertProductAttribute,
+				'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 				'preparedproductquestionStatement' => $insertProductQuestion,
 				'preparedproductanswerStatement' => $insertProductAnswer,
 				'store' => $store )
@@ -382,6 +382,27 @@ class Codisto_Sync_Model_Sync
 				'preparedattributegroupStatement' => $insertAttributeGroup,
 				'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 				'preparedproductattributeStatement' => $insertProductAttribute,
+				'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
+				'preparedproductquestionStatement' => $insertProductQuestion,
+				'preparedproductanswerStatement' => $insertProductAnswer,
+				'store' => $store )
+		);
+
+		Mage::getSingleton('core/resource_iterator')->walk($virtualProducts->getSelect(), array(array($this, 'SyncSimpleProductData')),
+			array(
+				'type' => 'virtual',
+				'db' => $db,
+				'preparedStatement' => $insertProduct,
+				'preparedcheckproductStatement' => $checkProduct,
+				'preparedcategoryproductStatement' => $insertCategoryProduct,
+				'preparedimageStatement' => $insertImage,
+				'preparedproducthtmlStatement' => $insertProductHTML,
+				'preparedproductrelatedStatement' => $insertProductRelated,
+				'preparedattributeStatement' => $insertAttribute,
+				'preparedattributegroupStatement' => $insertAttributeGroup,
+				'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
+				'preparedproductattributeStatement' => $insertProductAttribute,
+				'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 				'preparedproductquestionStatement' => $insertProductQuestion,
 				'preparedproductanswerStatement' => $insertProductAnswer,
 				'store' => $store )
@@ -404,6 +425,7 @@ class Codisto_Sync_Model_Sync
 				'preparedattributegroupStatement' => $insertAttributeGroup,
 				'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 				'preparedproductattributeStatement' => $insertProductAttribute,
+				'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 				'preparedproductquestionStatement' => $insertProductQuestion,
 				'preparedproductanswerStatement' => $insertProductAnswer,
 				'store' => $store )
@@ -426,7 +448,7 @@ class Codisto_Sync_Model_Sync
 		$db->exec('COMMIT TRANSACTION');
 	}
 
-	public function DeleteProduct($syncDb, $ids, $storeId)
+	public function DeleteProducts($syncDb, $ids, $storeId)
 	{
 		$db = $this->GetSyncDb($syncDb, 60 );
 
@@ -439,24 +461,29 @@ class Codisto_Sync_Model_Sync
 			$ids = array($ids);
 		}
 
-		$db->exec(
-			'DELETE FROM Product WHERE ExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM ProductImage WHERE ProductExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM ProductHTML WHERE ProductExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM ProductRelated WHERE ProductExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM ProductAttributeValue WHERE ProductExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM ProductQuestionAnswer WHERE ProductQuestionExternalReference IN (SELECT ExternalReference FROM ProductQuestion WHERE ProductExternalReference IN ('.implode(',', $ids).'));'.
-			'DELETE FROM ProductQuestion WHERE ProductExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM SKULink WHERE ProductExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM SKUMatrix WHERE ProductExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM SKU WHERE ProductExternalReference IN ('.implode(',', $ids).');'.
-			'DELETE FROM CategoryProduct WHERE ProductExternalReference IN ('.implode(',', $ids).')'
-		);
+		$db->exec('CREATE TEMPORARY TABLE TmpDeleted(entity_id text NOT NULL PRIMARY KEY)');
 
 		foreach($ids as $id)
 		{
+			$db->exec('INSERT OR IGNORE INTO TmpDeleted (entity_id) VALUES ('.$id.')');
 			$db->exec('INSERT OR IGNORE INTO ProductDelete VALUES('.$id.')');
 		}
+
+		$db->exec(
+			'DELETE FROM Product WHERE ExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM ProductImage WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM ProductHTML WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM ProductRelated WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM ProductAttributeValue WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM ProductQuestionAnswer WHERE ProductQuestionExternalReference IN (SELECT ExternalReference FROM ProductQuestion WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted));'.
+			'DELETE FROM ProductQuestion WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM SKULink WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM SKUMatrix WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM SKU WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted);'.
+			'DELETE FROM CategoryProduct WHERE ProductExternalReference IN (SELECT entity_id FROM TmpDeleted)'
+		);
+
+		$db->exec('DROP TABLE TmpDeleted');
 
 		$db->exec('COMMIT TRANSACTION');
 	}
@@ -477,7 +504,6 @@ class Codisto_Sync_Model_Sync
 		$data = array();
 		foreach ($insertFields as $key)
 		{
-
 			$value = $categoryData[$key];
 
 			if(!$value) {
@@ -536,6 +562,8 @@ class Codisto_Sync_Model_Sync
 		$parentProduct->getTypeInstance(true)->processConfiguration($addInfo, $parentProduct, Mage_Catalog_Model_Product_Type_Abstract::PROCESS_MODE_LITE);
 
 		$price = $this->getExTaxPrice($parentProduct, $parentProduct->getFinalPrice(), $store);
+		if(is_null($price))
+			$price = 0;
 
 		if ($currentProductWebsiteId == 0) {
 			$store->setStoreId($currentStoreId);
@@ -572,53 +600,80 @@ class Codisto_Sync_Model_Sync
 		$productParent = $args['parent_product'];
 
 		$attributeCodes = array();
+		$productAttributes = array();
+		$attributeValues = array();
 
 		foreach($attributes as $attribute)
 		{
-			$attributeCodes[] = $attribute->getProductAttribute()->getAttributeCode();
+			$prodAttr = $attribute->getProductAttribute();
+			if($prodAttr)
+			{
+				$attributeCodes[] = $prodAttr->getAttributeCode();
+				$productAttributes[] = $prodAttr;
+			}
 		}
 
-		$attributeValues = Mage::getResourceSingleton('catalog/product')->getAttributeRawValue($skuData['entity_id'], $attributeCodes, $store->getId());
-
-		if(!is_array($attributeValues))
-			$attributeValues = array( $attributeCodes[0] => $attributeValues );
-
-		$options = array();
-
-		foreach($attributes as $attribute)
+		if(!empty($attributeCodes))
 		{
-			$productAttribute = $attribute->getProductAttribute();
+			$attributeValues = Mage::getResourceSingleton('catalog/product')->getAttributeRawValue($skuData['entity_id'], $attributeCodes, $store->getId());
+			if(!is_array($attributeValues))
+				$attributeValues = array( $attributeCodes[0] => $attributeValues );
 
-			$options[$productAttribute->getId()] = $attributeValues[$productAttribute->getAttributeCode()];
+			$options = array();
+			foreach($productAttributes as $attribute)
+			{
+				$options[$attribute->getId()] = $attributeValues[$attribute->getAttributeCode()];
+			}
 		}
-		$price = $this->SyncProductPrice($store, $productParent, $options);
 
-		if(!$price)
+		if(!empty($options))
+		{
+			if($this->useSimplePrice)
+			{
+				$price = $this->SyncProductPrice($store, $product);
+			}
+			else
+			{
+				$price = $this->SyncProductPrice($store, $productParent, $options);
+			}
+			if(!$price)
+				$price = 0;
+		}
+		else
+		{
 			$price = 0;
+		}
 
 		$insertSKULinkSQL->execute(array($skuData['entity_id'], $args['parent_id'], $price));
-
 
 		// SKU Matrix
 		foreach($attributes as $attribute)
 		{
 			$productAttribute = $attribute->getProductAttribute();
-			$productOptionId = $productAttribute->getId();
-			$productOptionValueId = $attributeValues[$productAttribute->getAttributeCode()];
 
-			if(isset($productOptionValueId))
+			if($productAttribute)
 			{
-				$attributeName = $attribute->getLabel();
-				$attributeValue = $productAttribute->getSource()->getOptionText($productOptionValueId);
+				$productAttribute->setStoreId($store->getId());
+				$productAttribute->setStore($store);
 
-				$insertSKUMatrixSQL->execute(array(
-					$skuData['entity_id'],
-					$args['parent_id'],
-					'',
-					$attributeName,
-					$attributeValue,
-					$productOptionId,
-					$productOptionValueId));
+				$productOptionId = $productAttribute->getId();
+				$productOptionValueId = isset($attributeValues[$productAttribute->getAttributeCode()]) ?
+											$attributeValues[$productAttribute->getAttributeCode()] : null;
+
+				if($productOptionValueId != null)
+				{
+					$attributeName = $attribute->getLabel();
+					$attributeValue = $productAttribute->getSource()->getOptionText($productOptionValueId);
+
+					$insertSKUMatrixSQL->execute(array(
+						$skuData['entity_id'],
+						$args['parent_id'],
+						'',
+						$attributeName,
+						$attributeValue,
+						$productOptionId,
+						$productOptionValueId));
+				}
 			}
 		}
 	}
@@ -693,7 +748,7 @@ class Codisto_Sync_Model_Sync
 		$groupedData = Mage::getModel('catalog/product_type_grouped');
 
 		$childProducts = $groupedData->getAssociatedProductCollection($product);
-		$childProducts->addAttributeToSelect(array('sku', 'name', 'price', 'special_price', 'special_from_date', 'special_to_date'));
+		$childProducts->addAttributeToSelect(array('sku', 'name', 'price', 'special_price', 'special_from_date', 'special_to_date', 'tax_class_id'));
 
 		$skulinkArgs = array();
 		$skumatrixArgs = array();
@@ -727,6 +782,8 @@ class Codisto_Sync_Model_Sync
 				$optionValues[$childProduct->getName()] = 1;
 		}
 
+		$optionCheck = array();
+
 		foreach($optionValues as $key => $count)
 		{
 			if($count > 1)
@@ -738,7 +795,15 @@ class Codisto_Sync_Model_Sync
 					if($childProduct->getName() == $key)
 					{
 						$skumatrixArg = &$skumatrixArgs[$i];
-						$skumatrixArg[4] = $childProduct->getSku().' - '.$childProduct->getName();
+						if(isset($optionCheck[$childProduct->getName()]))
+						{
+							$skumatrixArg[4] = $childProduct->getSku().' - '.$childProduct->getName();
+						}
+						else
+						{
+							$skumatrixArg[4] = $childProduct->getName();
+							$optionCheck[$childProduct->getName()] = true;
+						}
 					}
 
 					$i++;
@@ -812,10 +877,40 @@ class Codisto_Sync_Model_Sync
 		$insertAttributeGroupSQL = $args['preparedattributegroupStatement'];
 		$insertAttributeGroupMapSQL = $args['preparedattributegroupmapStatement'];
 		$insertProductAttributeSQL = $args['preparedproductattributeStatement'];
+		$insertProductAttributeDefaultSQL = $args['preparedproductattributedefaultStatement'];
 		$insertProductQuestionSQL = $args['preparedproductquestionStatement'];
 		$insertProductAnswerSQL = $args['preparedproductanswerStatement'];
 
-		$price = $this->SyncProductPrice($store, $product);
+
+		$badoptiondata = false;
+
+		if($type == 'configurable') {
+
+			$attributes = null;
+			try {
+				$configurableData = Mage::getModel('catalog/product_type_configurable');
+				$attributes = $configurableData->getConfigurableAttributes($product);
+			} catch(Exception $e) {
+				$badoptiondata = true;
+			}
+
+			if($attributes) {
+				foreach($attributes as $attribute)
+				{
+					$prodAttr = $attribute->getProductAttribute();
+					if(!is_object($prodAttr) || !$prodAttr->getAttributeCode())
+					{
+						$badoptiondata = true;
+					}
+				}
+			}
+
+		}
+
+		if(!$badoptiondata)
+			$price = $this->SyncProductPrice($store, $product);
+		else
+			$price = 0;
 
 		$listPrice = $this->getExTaxPrice($product, $product->getPrice(), $store);
 		if(!is_numeric($listPrice))
@@ -836,7 +931,7 @@ class Codisto_Sync_Model_Sync
 		}
 
 		$description = Mage::helper('codistosync')->processCmsContent($description);
-		if($type == 'simple' &&
+		if(($type == 'simple' || $type == 'virtual') &&
 			$description == '')
 		{
 			if(!isset($parentids))
@@ -870,9 +965,9 @@ class Codisto_Sync_Model_Sync
 		$data = array();
 
 		$data[] = $product_id;
-		$data[] = $type == 'configurable' ? 'c' : ($type == 'grouped' ? 'g' : 's');
+		$data[] = $type == 'configurable' ? 'c' : ($type == 'grouped' ? 'g' : ($type == 'virtual' ? 'v' : 's'));
 		$data[] = $productData['sku'];
-		$data[] = $productName;
+		$data[] = html_entity_decode($productName);
 		$data[] = $price;
 		$data[] = $listPrice;
 		$data[] = isset($productData['tax_class_id']) && $productData['tax_class_id'] ? $productData['tax_class_id'] : '';
@@ -916,6 +1011,9 @@ class Codisto_Sync_Model_Sync
 
 		foreach($attributes as $attribute)
 		{
+			$attribute->setStoreId($store->getId());
+			$attribute->setStore($store);
+
 			$backend = $attribute->getBackEnd();
 			if(!$backend->isStatic())
 			{
@@ -1018,7 +1116,9 @@ class Codisto_Sync_Model_Sync
 			}
 		}
 
-		$adapter = Mage::getModel('core/resource')->getConnection(Mage_Core_Model_Resource::DEFAULT_READ_RESOURCE);
+		$coreResource = Mage::getModel('core/resource');
+
+		$adapter = $coreResource->getConnection(Mage_Core_Model_Resource::DEFAULT_READ_RESOURCE);
 
 		$attrTypeSelects = array();
 
@@ -1027,21 +1127,24 @@ class Codisto_Sync_Model_Sync
 			$attrTypeSelect = $adapter->select()
 						->from(array('default_value' => $table), array('attribute_id'))
 						->where('default_value.attribute_id IN (?)', array_keys($_attributes))
-						->where('default_value.entity_type_id = :entity_type_id')
 						->where('default_value.entity_id = :entity_id')
 						->where('default_value.store_id = 0');
-
 
 			if($store->getId() == Mage_Catalog_Model_Abstract::DEFAULT_STORE_ID)
 			{
 				$attrTypeSelect->columns(array('attr_value' => new Zend_Db_Expr('CAST(value AS CHAR)')), 'default_value');
+				$attrTypeSelect->columns(array('default_value' => 'value'), 'default_value');
 				$attrTypeSelect->where('default_value.value IS NOT NULL');
 			}
 			else
 			{
+				$attrTypeSelect->columns(array('default_value' => 'value'), 'default_value');
 				$attrTypeSelect->joinLeft(
 					array('store_value' => $table),
-					'store_value.attribute_id = default_value.attribute_id AND store_value.entity_type_id = default_value.entity_type_id AND store_value.entity_id = default_value.entity_id AND store_value.store_id = :store_id ',
+					'store_value.attribute_id = default_value.attribute_id '.
+					'AND store_value.attribute_id IN (SELECT attribute_id FROM `'.$coreResource->getTableName('catalog/eav_attribute').'` WHERE is_global != 0) '.
+					'AND store_value.entity_id = default_value.entity_id '.
+					'AND store_value.store_id = :store_id ',
 					array('attr_value' => new Zend_Db_Expr('CAST(COALESCE(store_value.value, default_value.value) AS CHAR)'))
 				);
 				$attrTypeSelect->where('store_value.value IS NOT NULL OR default_value.value IS NOT NULL');
@@ -1050,128 +1153,231 @@ class Codisto_Sync_Model_Sync
 			$attrTypeSelects[] = $attrTypeSelect;
 		}
 
-		$attributeValues = array();
-
-		$attrSelect = $adapter->select()->union($attrTypeSelects, Zend_Db_Select::SQL_UNION_ALL);
-
-		$attrArgs = array(
-			'entity_type_id' => 4,
-			'entity_id' => $product_id,
-			'store_id' => $store->getId()
-		);
-
-		$attributeRows = $adapter->fetchPairs($attrSelect, $attrArgs);
-		foreach ($attributeRows as $attributeId => $attributeValue)
+		if(!empty($attrTypeSelects))
 		{
-			$attributeCode = $attributeCodeIDMap[$attributeId];
-			$attributeValues[$attributeCode] = $attributeValue;
-		}
+			$attributeValues = array();
 
-		foreach($attributeSet as $attributeData)
-		{
-			if(isset($attributeValues[$attributeData['code']]))
-				$attributeValue = $attributeValues[$attributeData['code']];
-			else
-				$attributeValue = null;
+			$attrSelect = $adapter->select()->union($attrTypeSelects, Zend_Db_Select::SQL_UNION_ALL);
 
-			if(isset($attributeData['source']) &&
-				$attributeData['source_model'] == 'eav/entity_attribute_source_boolean')
+			$attrArgs = array(
+				'entity_id' => $product_id,
+				'store_id' => $store->getId()
+			);
+
+			foreach($adapter->fetchAll($attrSelect, $attrArgs, Zend_Db::FETCH_NUM) as $attributeRow)
 			{
-				$attributeData['backend_type'] = 'boolean';
+				$attributeId = $attributeRow[0];
 
-				if(isset($attributeValue) && $attributeValue)
-					$attributeValue = -1;
-				else
-					$attributeValue = 0;
+				$attributeCode = $attributeCodeIDMap[$attributeId];
+				$attributeValues[$attributeCode] = $attributeRow;
 			}
 
-			else if($attributeData['html'])
+			foreach($attributeSet as $attributeData)
 			{
-				$attributeValue = Mage::helper('codistosync')->processCmsContent($attributeValue);
-			}
-
-			else if( in_array($attributeData['frontend_type'], array( 'select', 'multiselect' ) ) )
-			{
-				if(is_array($attributeValue))
+				if(isset($attributeValues[$attributeData['code']]))
 				{
-					if(isset($attributeData['source']) &&
-						method_exists( $attributeData['source'], 'getOptionText') )
-					{
-						$attributeValueSet = array();
+					$attributeRow = $attributeValues[$attributeData['code']];
 
-						foreach($attributeValue as $attributeOptionId)
+					$defaultValue = $attributeRow[1];
+					$attributeValue = $attributeRow[2];
+				}
+				else
+				{
+					$defaultValue = null;
+					$attributeValue = null;
+				}
+
+				if(isset($attributeData['source']) &&
+					$attributeData['source_model'] == 'eav/entity_attribute_source_boolean')
+				{
+					$attributeData['backend_type'] = 'boolean';
+
+					if(isset($defaultValue) && $defaultValue)
+						$defaultValue = -1;
+					else
+						$defaultValue = 0;
+
+					if(isset($attributeValue) && $attributeValue)
+						$attributeValue = -1;
+					else
+						$attributeValue = 0;
+				}
+
+				else if($attributeData['html'])
+				{
+					if($defaultValue == $attributeValue)
+					{
+						$defaultValue = $attributeValue = Mage::helper('codistosync')->processCmsContent($attributeValue);
+					}
+					else
+					{
+						$defaultValue = Mage::helper('codistosync')->processCmsContent($defaultValue);
+						$attributeValue = Mage::helper('codistosync')->processCmsContent($attributeValue);
+					}
+				}
+
+				else if( in_array($attributeData['frontend_type'], array( 'select', 'multiselect' ) ) )
+				{
+					if(is_array($attributeValue))
+					{
+						if(isset($attributeData['source']) &&
+							method_exists( $attributeData['source'], 'getOptionText') )
 						{
-							if(isset($this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeOptionId]))
+							$defaultValueSet = array();
+
+							foreach($attributeValue as $attributeOptionId)
 							{
-								$attributeValueSet[] = $this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeOptionId];
+								if(isset($this->optionTextCache['0-'.$attributeData['id'].'-'.$attributeOptionId]))
+								{
+									$defaultValueSet[] = $this->optionTextCache['0-'.$attributeData['id'].'-'.$attributeOptionId];
+								}
+								else
+								{
+									try
+									{
+										$attributeData['source']->getAttribute()->setStoreId(0);
+
+										$attributeText = $attributeData['source']->getOptionText($attributeOptionId);
+
+										$attributeData['source']->getAttribute()->setStoreId($store->getId());
+
+										$this->optionTextCache['0-'.$attributeData['id'].'-'.$attributeOptionId] = $attributeText;
+
+										$defaultValueSet[] = $attributeText;
+									}
+									catch(Exception $e)
+									{
+
+									}
+								}
+							}
+
+							$defaultValue = $defaultValueSet;
+						}
+					}
+					else
+					{
+						if(isset($attributeData['source'])  &&
+							method_exists( $attributeData['source'], 'getOptionText') )
+						{
+							if(isset($this->optionTextCache['0-'.$attributeData['id'].'-'.$attributeValue]))
+							{
+								$defaultValue = $this->optionTextCache['0-'.$attributeData['id'].'-'.$attributeValue];
 							}
 							else
 							{
 								try
 								{
-									$attributeText = $attributeData['source']->getOptionText($attributeOptionId);
+									$attributeData['source']->getAttribute()->setStoreId(0);
 
-									$this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeOptionId] = $attributeText;
+									$attributeText = $attributeData['source']->getOptionText($attributeValue);
 
-									$attributeValueSet[] = $attributeText;
+									$attributeData['source']->getAttribute()->setStoreId($store->getId());
+
+									$this->optionTextCache['0-'.$attributeData['id'].'-'.$attributeValue] = $attributeText;
+
+									$defaultValue = $attributeText;
 								}
 								catch(Exception $e)
 								{
-
+									$defaultValue = null;
 								}
 							}
 						}
-
-						$attributeValue = $attributeValueSet;
 					}
-				}
-				else
-				{
-					if(isset($attributeData['source'])  &&
-						method_exists( $attributeData['source'], 'getOptionText') )
+
+					if(is_array($attributeValue))
 					{
-						if(isset($this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeValue]))
+						if(isset($attributeData['source']) &&
+							method_exists( $attributeData['source'], 'getOptionText') )
 						{
-							$attributeValue = $this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeValue];
-						}
-						else
-						{
-							try
+							$attributeValueSet = array();
+
+							foreach($attributeValue as $attributeOptionId)
 							{
-								$attributeText = $attributeData['source']->getOptionText($attributeValue);
+								if(isset($this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeOptionId]))
+								{
+									$attributeValueSet[] = $this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeOptionId];
+								}
+								else
+								{
+									try
+									{
+										$attributeText = $attributeData['source']->getOptionText($attributeOptionId);
 
-								$this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeValue] = $attributeText;
+										$this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeOptionId] = $attributeText;
 
-								$attributeValue = $attributeText;
+										$attributeValueSet[] = $attributeText;
+									}
+									catch(Exception $e)
+									{
+
+									}
+								}
 							}
-							catch(Exception $e)
+
+							$attributeValue = $attributeValueSet;
+						}
+					}
+					else
+					{
+						if(isset($attributeData['source'])  &&
+							method_exists( $attributeData['source'], 'getOptionText') )
+						{
+							if(isset($this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeValue]))
 							{
-								$attributeValue = null;
+								$attributeValue = $this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeValue];
+							}
+							else
+							{
+								try
+								{
+									$attributeText = $attributeData['source']->getOptionText($attributeValue);
+
+									$this->optionTextCache[$store->getId().'-'.$attributeData['id'].'-'.$attributeValue] = $attributeText;
+
+									$attributeValue = $attributeText;
+								}
+								catch(Exception $e)
+								{
+									$attributeValue = null;
+								}
 							}
 						}
 					}
 				}
-			}
 
-			if(isset($attributeValue) && !is_null($attributeValue))
-			{
-				if($attributeData['html'])
+				if(isset($attributeValue) && !is_null($attributeValue))
 				{
-					$insertHTMLSQL->execute(array($product_id, $attributeData['label'], $attributeValue));
+					if($attributeData['html'])
+					{
+						$insertHTMLSQL->execute(array($product_id, $attributeData['label'], $attributeValue));
+					}
+
+					$insertAttributeSQL->execute(array($attributeData['id'], $attributeData['name'], $attributeData['label'], $attributeData['backend_type'], $attributeData['frontend_type']));
+
+					if($attributeData['groupid'])
+					{
+						$insertAttributeGroupSQL->execute(array($attributeData['groupid'], $attributeData['groupname']));
+						$insertAttributeGroupMapSQL->execute(array($attributeData['groupid'], $attributeData['id']));
+					}
+
+					if(is_array($attributeValue))
+						$attributeValue = implode(',', $attributeValue);
+
+					$insertProductAttributeSQL->execute(array($product_id, $attributeData['id'], $attributeValue));
 				}
 
-				$insertAttributeSQL->execute(array($attributeData['id'], $attributeData['name'], $attributeData['label'], $attributeData['backend_type'], $attributeData['frontend_type']));
-
-				if($attributeData['groupid'])
+				if(isset($defaultValue) && !is_null($defaultValue))
 				{
-					$insertAttributeGroupSQL->execute(array($attributeData['groupid'], $attributeData['groupname']));
-					$insertAttributeGroupMapSQL->execute(array($attributeData['groupid'], $attributeData['id']));
+					if(is_array($defaultValue))
+						$defaultValue = implode(',', $defaultValue);
+
+					if($defaultValue != $attributeValue)
+					{
+						$insertProductAttributeDefaultSQL->execute(array($product_id, $attributeData['id'], $defaultValue));
+					}
 				}
-
-				if(is_array($attributeValue))
-					$attributeValue = implode(',', $attributeValue);
-
-				$insertProductAttributeSQL->execute(array($product_id, $attributeData['id'], $attributeValue));
 			}
 		}
 
@@ -1348,7 +1554,7 @@ class Codisto_Sync_Model_Sync
 			}
 		}
 
-		if($type == 'simple')
+		if($type == 'simple' || $type == 'virtual')
 		{
 			$this->productsProcessed[] = $product_id;
 
@@ -1363,7 +1569,7 @@ class Codisto_Sync_Model_Sync
 
 		$orderData = $args['row'];
 
-		$insertOrdersSQL->execute(array($orderData['codisto_orderid'], ($orderData['status'])?$orderData['status']:'processing', $orderData['pay_date'], $orderData['ship_date'], $orderData['carrier'], $orderData['track_number']));
+		$insertOrdersSQL->execute(array($orderData['codisto_orderid'], ($orderData['status'])?$orderData['status']:'processing', $orderData['pay_date'], $orderData['ship_date'], $orderData['carrier'], $orderData['track_number'], $orderData['externalreference'], $orderData['codisto_merchantid']));
 
 		$this->ordersProcessed[] = $orderData['entity_id'];
 		$this->currentEntityId = $orderData['entity_id'];
@@ -1496,10 +1702,11 @@ class Codisto_Sync_Model_Sync
 					$insertAttributeGroup = $db->prepare('INSERT OR REPLACE INTO AttributeGroup(ID, Name) VALUES(?, ?)');
 					$insertAttributeGroupMap = $db->prepare('INSERT OR IGNORE INTO AttributeGroupMap(GroupID, AttributeID) VALUES(?,?)');
 					$insertProductAttribute = $db->prepare('INSERT OR IGNORE INTO ProductAttributeValue(ProductExternalReference, AttributeID, Value) VALUES (?, ?, ?)');
+					$insertProductAttributeDefault = $db->prepare('INSERT OR IGNORE INTO ProductAttributeDefaultValue(ProductExternalReference, AttributeID, Value) VALUES (?, ?, ?)');
 					$insertProductQuestion = $db->prepare('INSERT OR REPLACE INTO ProductQuestion(ExternalReference, ProductExternalReference, Name, Type, Sequence) VALUES (?, ?, ?, ?, ?)');
 					$insertProductAnswer = $db->prepare('INSERT INTO ProductQuestionAnswer(ProductQuestionExternalReference, Value, PriceModifier, SKUModifier, Sequence) VALUES (?, ?, ?, ?, ?)');
 
-					// Simple Products not participating as configurable skus
+					// Simple Products
 					$simpleProducts = $this->getProductCollection()
 										->addAttributeToSelect($this->availableProductFields, 'left')
 										->addAttributeToFilter('type_id', array('eq' => 'simple'))
@@ -1521,9 +1728,38 @@ class Codisto_Sync_Model_Sync
 							'preparedattributegroupStatement' => $insertAttributeGroup,
 							'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 							'preparedproductattributeStatement' => $insertProductAttribute,
+							'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 							'preparedproductquestionStatement' => $insertProductQuestion,
 							'preparedproductanswerStatement' => $insertProductAnswer,
 							'store' => $storeObject ));
+
+					// Virtual Products
+					$virtualProducts = $this->getProductCollection()
+										->addAttributeToSelect($this->availableProductFields, 'left')
+										->addAttributeToFilter('type_id', array('eq' => 'virtual'))
+										->addAttributeToFilter('entity_id', array('in' => $productUpdateIds) );
+					$virtualProducts->getSelect()
+										->columns(array('codisto_in_store' => new Zend_Db_Expr('CASE WHEN `e`.entity_id IN (SELECT product_id FROM `'.$catalogWebsiteName.'` WHERE website_id IN (SELECT website_id FROM `'.$storeName.'` WHERE store_id = '.$storeId.' OR EXISTS(SELECT 1 FROM `'.$storeName.'` WHERE store_id = '.$storeId.' AND website_id = 0))) THEN -1 ELSE 0 END')));
+
+					Mage::getSingleton('core/resource_iterator')->walk($virtualProducts->getSelect(), array(array($this, 'SyncSimpleProductData')),
+						array(
+							'type' => 'virtual',
+							'db' => $db,
+							'preparedStatement' => $insertProduct,
+							'preparedcheckproductStatement' => $checkProduct,
+							'preparedcategoryproductStatement' => $insertCategoryProduct,
+							'preparedimageStatement' => $insertImage,
+							'preparedproducthtmlStatement' => $insertProductHTML,
+							'preparedproductrelatedStatement' => $insertProductRelated,
+							'preparedattributeStatement' => $insertAttribute,
+							'preparedattributegroupStatement' => $insertAttributeGroup,
+							'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
+							'preparedproductattributeStatement' => $insertProductAttribute,
+							'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
+							'preparedproductquestionStatement' => $insertProductQuestion,
+							'preparedproductanswerStatement' => $insertProductAnswer,
+							'store' => $storeObject ));
+
 
 					// Configurable products
 					$configurableProducts = $this->getProductCollection()
@@ -1550,6 +1786,7 @@ class Codisto_Sync_Model_Sync
 							'preparedattributegroupStatement' => $insertAttributeGroup,
 							'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 							'preparedproductattributeStatement' => $insertProductAttribute,
+							'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 							'preparedproductquestionStatement' => $insertProductQuestion,
 							'preparedproductanswerStatement' => $insertProductAnswer,
 							'store' => $storeObject )
@@ -1581,6 +1818,7 @@ class Codisto_Sync_Model_Sync
 							'preparedattributegroupStatement' => $insertAttributeGroup,
 							'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 							'preparedproductattributeStatement' => $insertProductAttribute,
+							'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 							'preparedproductquestionStatement' => $insertProductQuestion,
 							'preparedproductanswerStatement' => $insertProductAnswer,
 							'store' => $storeObject )
@@ -1601,7 +1839,32 @@ class Codisto_Sync_Model_Sync
 
 				if(!empty($orderUpdateIds))
 				{
-					$insertOrders = $db->prepare('INSERT OR REPLACE INTO [Order] (ID, Status, PaymentDate, ShipmentDate, Carrier, TrackingNumber) VALUES (?, ?, ?, ?, ?, ?)');
+					$connection = $coreResource->getConnection(Mage_Core_Model_Resource::DEFAULT_WRITE_RESOURCE);
+					try
+					{
+						$connection->addColumn(
+								$tablePrefix . 'sales_flat_order',
+								'codisto_orderid',
+								'varchar(10)'
+							);
+					}
+					catch(Exception $e)
+					{
+					}
+
+					try
+					{
+						$connection->addColumn(
+								$tablePrefix . 'sales_flat_order',
+								'codisto_merchantid',
+								'varchar(10)'
+							);
+					}
+					catch(Exception $e)
+					{
+					}
+
+					$insertOrders = $db->prepare('INSERT OR REPLACE INTO [Order] (ID, Status, PaymentDate, ShipmentDate, Carrier, TrackingNumber, ExternalReference, MerchantID) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
 
 					$orderStoreId = $storeId;
 					if($storeId == 0)
@@ -1622,7 +1885,8 @@ class Codisto_Sync_Model_Sync
 					$ts -= 7776000; // 90 days
 
 					$orders = Mage::getModel('sales/order')->getCollection()
-								->addFieldToSelect(array('codisto_orderid', 'status'))
+								->addFieldToSelect(array('codisto_orderid', 'codisto_merchantid', 'status' ))
+								->addFieldToSelect('entity_id','externalreference')
 								->addAttributeToFilter('entity_id', array('in' => $orderUpdateIds ))
 								->addAttributeToFilter('main_table.store_id', array('eq' => $orderStoreId ))
 								->addAttributeToFilter('main_table.updated_at', array('gteq' => date('Y-m-d H:i:s', $ts)))
@@ -1630,7 +1894,7 @@ class Codisto_Sync_Model_Sync
 					$orders->getSelect()->joinLeft( array('i' => $invoiceName), 'i.order_id = main_table.entity_id AND i.state = 2', array('pay_date' => 'MIN(i.created_at)'));
 					$orders->getSelect()->joinLeft( array('s' => $shipmentName), 's.order_id = main_table.entity_id', array('ship_date' => 'MIN(s.created_at)'));
 					$orders->getSelect()->joinLeft( array('t' => $shipmentTrackName), 't.order_id = main_table.entity_id', array('carrier' => 'GROUP_CONCAT(COALESCE(t.title, \'\') SEPARATOR \',\')', 'track_number' => 'GROUP_CONCAT(COALESCE(t.track_number, \'\') SEPARATOR \',\')'));
-					$orders->getSelect()->group(array('main_table.entity_id', 'main_table.codisto_orderid', 'main_table.status'));
+					$orders->getSelect()->group(array('main_table.entity_id', 'main_table.codisto_orderid', 'main_table.codisto_merchantid', 'main_table.status'));
 					$orders->setOrder('entity_id', 'ASC');
 
 					Mage::getSingleton('core/resource_iterator')->walk($orders->getSelect(), array(array($this, 'SyncOrderData')),
@@ -1767,22 +2031,22 @@ class Codisto_Sync_Model_Sync
 		$db->exec('BEGIN EXCLUSIVE TRANSACTION');
 
 		$qry = $db->query('SELECT CASE WHEN '.
-							'EXISTS(SELECT 1 FROM sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'ProductChange\') AND '.
-							'EXISTS(SELECT 1 FROM ChangeDb.sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'ProductChangeProcessed\') '.
+							'EXISTS(SELECT 1 FROM sqlite_master WHERE type = \'table\' AND name = \'ProductChange\') AND '.
+							'EXISTS(SELECT 1 FROM ChangeDb.sqlite_master WHERE type = \'table\' AND name = \'ProductChangeProcessed\') '.
 							'THEN -1 ELSE 0 END');
 		$processProductChange = $qry->fetchColumn();
 		$qry->closeCursor();
 
 		$qry = $db->query('SELECT CASE WHEN '.
-							'EXISTS(SELECT 1 FROM sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'CategoryChange\') AND '.
-							'EXISTS(SELECT 1 FROM ChangeDb.sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'CategoryChangeProcessed\') '.
+							'EXISTS(SELECT 1 FROM sqlite_master WHERE type = \'table\' AND name = \'CategoryChange\') AND '.
+							'EXISTS(SELECT 1 FROM ChangeDb.sqlite_master WHERE type = \'table\' AND name = \'CategoryChangeProcessed\') '.
 							'THEN -1 ELSE 0 END');
 		$processCategoryChange = $qry->fetchColumn();
 		$qry->closeCursor();
 
 		$qry = $db->query('SELECT CASE WHEN '.
-							'EXISTS(SELECT 1 FROM sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'OrderChange\') AND '.
-							'EXISTS(SELECT 1 FROM ChangeDb.sqlite_master WHERE type COLLATE NOCASE = \'TABLE\' AND name = \'OrderChangeProcessed\') '.
+							'EXISTS(SELECT 1 FROM sqlite_master WHERE type = \'table\' AND name = \'OrderChange\') AND '.
+							'EXISTS(SELECT 1 FROM ChangeDb.sqlite_master WHERE type = \'table\' AND name = \'OrderChangeProcessed\') '.
 							'THEN -1 ELSE 0 END');
 		$processOrderChange = $qry->fetchColumn();
 		$qry->closeCursor();
@@ -1840,9 +2104,10 @@ class Codisto_Sync_Model_Sync
 		$insertAttributeGroup = $db->prepare('INSERT OR REPLACE INTO AttributeGroup(ID, Name) VALUES(?, ?)');
 		$insertAttributeGroupMap = $db->prepare('INSERT OR IGNORE INTO AttributeGroupMap(GroupID, AttributeID) VALUES(?,?)');
 		$insertProductAttribute = $db->prepare('INSERT OR IGNORE INTO ProductAttributeValue(ProductExternalReference, AttributeID, Value) VALUES (?, ?, ?)');
+		$insertProductAttributeDefault = $db->prepare('INSERT OR IGNORE INTO ProductAttributeDefaultValue(ProductExternalReference, AttributeID, Value) VALUES (?, ?, ?)');
 		$insertProductQuestion = $db->prepare('INSERT OR REPLACE INTO ProductQuestion(ExternalReference, ProductExternalReference, Name, Type, Sequence) VALUES (?, ?, ?, ?, ?)');
 		$insertProductAnswer = $db->prepare('INSERT INTO ProductQuestionAnswer(ProductQuestionExternalReference, Value, PriceModifier, SKUModifier, Sequence) VALUES (?, ?, ?, ?, ?)');
-		$insertOrders = $db->prepare('INSERT OR REPLACE INTO [Order] (ID, Status, PaymentDate, ShipmentDate, Carrier, TrackingNumber) VALUES (?, ?, ?, ?, ?, ?)');
+		$insertOrders = $db->prepare('INSERT OR REPLACE INTO [Order] (ID, Status, PaymentDate, ShipmentDate, Carrier, TrackingNumber, ExternalReference, MerchantID) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
 
 		$db->exec('BEGIN EXCLUSIVE TRANSACTION');
 
@@ -1929,7 +2194,7 @@ class Codisto_Sync_Model_Sync
 
 		if($state == 'simple')
 		{
-			// Simple Products not participating as configurable skus
+			// Simple Products
 
 			$simpleProducts = $this->getProductCollection()->addAttributeToSelect($this->availableProductFields, 'left')
 								->addAttributeToFilter('type_id', array('eq' => 'simple'))
@@ -1955,6 +2220,7 @@ class Codisto_Sync_Model_Sync
 					'preparedattributegroupStatement' => $insertAttributeGroup,
 					'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 					'preparedproductattributeStatement' => $insertProductAttribute,
+					'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 					'preparedproductquestionStatement' => $insertProductQuestion,
 					'preparedproductanswerStatement' => $insertProductAnswer,
 					'store' => $store ));
@@ -1962,6 +2228,50 @@ class Codisto_Sync_Model_Sync
 			if(!empty($this->productsProcessed))
 			{
 				$db->exec('INSERT OR REPLACE INTO Progress (Sentinel, State, entity_id) VALUES (1, \'simple\', '.$this->currentEntityId.')');
+			}
+			else
+			{
+				$state = 'virtual';
+				$this->currentEntityId = 0;
+			}
+		}
+
+		if($state == 'virtual')
+		{
+			// Virtual Products
+
+			$virtualProducts = $this->getProductCollection()->addAttributeToSelect($this->availableProductFields, 'left')
+								->addAttributeToFilter('type_id', array('eq' => 'virtual'))
+								->addAttributeToFilter('entity_id', array('gt' => (int)$this->currentEntityId));
+
+			$virtualProducts->getSelect()
+								->columns(array('codisto_in_store' => new Zend_Db_Expr('CASE WHEN `e`.entity_id IN (SELECT product_id FROM `'.$catalogWebsiteName.'` WHERE website_id IN (SELECT website_id FROM `'.$storeName.'` WHERE store_id = '.$storeId.' OR EXISTS(SELECT 1 FROM `'.$storeName.'` WHERE store_id = '.$storeId.' AND website_id = 0))) THEN -1 ELSE 0 END')))
+								->order('entity_id')
+								->limit($simpleCount);
+			$virtualProducts->setOrder('entity_id', 'ASC');
+
+			Mage::getSingleton('core/resource_iterator')->walk($virtualProducts->getSelect(), array(array($this, 'SyncSimpleProductData')),
+				array(
+					'type' => 'virtual',
+					'db' => $db,
+					'preparedStatement' => $insertProduct,
+					'preparedcheckproductStatement' => $checkProduct,
+					'preparedcategoryproductStatement' => $insertCategoryProduct,
+					'preparedimageStatement' => $insertImage,
+					'preparedproducthtmlStatement' => $insertProductHTML,
+					'preparedproductrelatedStatement' => $insertProductRelated,
+					'preparedattributeStatement' => $insertAttribute,
+					'preparedattributegroupStatement' => $insertAttributeGroup,
+					'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
+					'preparedproductattributeStatement' => $insertProductAttribute,
+					'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
+					'preparedproductquestionStatement' => $insertProductQuestion,
+					'preparedproductanswerStatement' => $insertProductAnswer,
+					'store' => $store ));
+
+			if(!empty($this->productsProcessed))
+			{
+				$db->exec('INSERT OR REPLACE INTO Progress (Sentinel, State, entity_id) VALUES (1, \'virtual\', '.$this->currentEntityId.')');
 			}
 			else
 			{
@@ -2001,6 +2311,7 @@ class Codisto_Sync_Model_Sync
 					'preparedattributegroupStatement' => $insertAttributeGroup,
 					'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 					'preparedproductattributeStatement' => $insertProductAttribute,
+					'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 					'preparedproductquestionStatement' => $insertProductQuestion,
 					'preparedproductanswerStatement' => $insertProductAnswer,
 					'store' => $store )
@@ -2048,6 +2359,7 @@ class Codisto_Sync_Model_Sync
 					'preparedattributegroupStatement' => $insertAttributeGroup,
 					'preparedattributegroupmapStatement' => $insertAttributeGroupMap,
 					'preparedproductattributeStatement' => $insertProductAttribute,
+					'preparedproductattributedefaultStatement' => $insertProductAttributeDefault,
 					'preparedproductquestionStatement' => $insertProductQuestion,
 					'preparedproductanswerStatement' => $insertProductAnswer,
 					'store' => $store )
@@ -2080,6 +2392,18 @@ class Codisto_Sync_Model_Sync
 				catch(Exception $e)
 				{
 				}
+
+				try
+				{
+					$connection->addColumn(
+							$tablePrefix . 'sales_flat_order',
+							'codisto_merchantid',
+							'varchar(10)'
+						);
+				}
+				catch(Exception $e)
+				{
+				}
 			}
 
 			$orderStoreId = $storeId;
@@ -2101,7 +2425,8 @@ class Codisto_Sync_Model_Sync
 			$ts -= 7776000; // 90 days
 
 			$orders = Mage::getModel('sales/order')->getCollection()
-						->addFieldToSelect(array('codisto_orderid', 'status'))
+						->addFieldToSelect(array('codisto_orderid', 'codisto_merchantid', 'status'))
+						->addFieldToSelect('entity_id','externalreference')
 						->addAttributeToFilter('entity_id', array('gt' => (int)$this->currentEntityId ))
 						->addAttributeToFilter('main_table.store_id', array('eq' => $orderStoreId ))
 						->addAttributeToFilter('main_table.updated_at', array('gteq' => date('Y-m-d H:i:s', $ts)))
@@ -2109,7 +2434,7 @@ class Codisto_Sync_Model_Sync
 			$orders->getSelect()->joinLeft( array('i' => $invoiceName), 'i.order_id = main_table.entity_id AND i.state = 2', array('pay_date' => 'MIN(i.created_at)'));
 			$orders->getSelect()->joinLeft( array('s' => $shipmentName), 's.order_id = main_table.entity_id', array('ship_date' => 'MIN(s.created_at)'));
 			$orders->getSelect()->joinLeft( array('t' => $shipmentTrackName), 't.order_id = main_table.entity_id', array('carrier' => 'GROUP_CONCAT(COALESCE(t.title, \'\') SEPARATOR \',\')', 'track_number' => 'GROUP_CONCAT(COALESCE(t.track_number, \'\') SEPARATOR \',\')'));
-			$orders->getSelect()->group(array('main_table.entity_id', 'main_table.codisto_orderid', 'main_table.status'));
+			$orders->getSelect()->group(array('main_table.entity_id', 'main_table.codisto_orderid', 'main_table.codisto_merchantid', 'main_table.status'));
 			$orders->getSelect()->limit(1000);
 			$orders->setOrder('entity_id', 'ASC');
 
@@ -2163,7 +2488,7 @@ class Codisto_Sync_Model_Sync
 			$db->exec('INSERT OR REPLACE INTO Progress (Sentinel, State, entity_id) VALUES (1, \'complete\', 0)');
 		}
 
-		if((empty($this->productsProcessed) && empty($this->ordersProcessed)) || $first)
+		if(empty($this->productsProcessed) && empty($this->ordersProcessed))
 		{
 			$uniqueId = uniqid();
 
@@ -2174,6 +2499,12 @@ class Codisto_Sync_Model_Sync
 
 			$db->exec('CREATE TABLE IF NOT EXISTS Sync (token text NOT NULL, sentinel NOT NULL PRIMARY KEY DEFAULT 1, CHECK(sentinel = 1))');
 			$db->exec('INSERT OR REPLACE INTO Sync (token) VALUES (\''.$uniqueId.'\')');
+			$db->exec('COMMIT TRANSACTION');
+
+			return 'complete';
+		}
+		else if($first)
+		{
 			$db->exec('COMMIT TRANSACTION');
 
 			return 'complete';
@@ -2198,7 +2529,7 @@ class Codisto_Sync_Model_Sync
 
 		$simpleProducts = $this->getProductCollection()
 							->addAttributeToSelect(array('entity_id'), 'left')
-							->addAttributeToFilter('type_id', array('eq' => 'simple'));
+							->addAttributeToFilter('type_id', array('in' => array('simple', 'virtual')));
 
 		$simplecount = $simpleProducts->getSize();
 
@@ -2425,7 +2756,7 @@ class Codisto_Sync_Model_Sync
 
 		$db = $this->GetSyncDb($syncDb, 5 );
 
-		$insertOrders = $db->prepare('INSERT OR REPLACE INTO [Order] (ID, Status, PaymentDate, ShipmentDate, Carrier, TrackingNumber) VALUES (?, ?, ?, ?, ?, ?)');
+		$insertOrders = $db->prepare('INSERT OR REPLACE INTO [Order] (ID, Status, PaymentDate, ShipmentDate, Carrier, TrackingNumber, ExternalReference, MerchantID) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
 
 		$coreResource = Mage::getSingleton('core/resource');
 
@@ -2436,13 +2767,14 @@ class Codisto_Sync_Model_Sync
 		$db->exec('BEGIN EXCLUSIVE TRANSACTION');
 
 		$orders = Mage::getModel('sales/order')->getCollection()
-					->addFieldToSelect(array('codisto_orderid', 'status'))
+					->addFieldToSelect(array('codisto_orderid', 'codisto_merchantid', 'status'))
+					->addFieldToSelect('entity_id','externalreference')
 					->addAttributeToFilter('codisto_orderid', array('in' => $orders ));
 
 		$orders->getSelect()->joinLeft( array('i' => $invoiceName), 'i.order_id = main_table.entity_id AND i.state = 2', array('pay_date' => 'MIN(i.created_at)'));
 		$orders->getSelect()->joinLeft( array('s' => $shipmentName), 's.order_id = main_table.entity_id', array('ship_date' => 'MIN(s.created_at)'));
 		$orders->getSelect()->joinLeft( array('t' => $shipmentTrackName), 't.order_id = main_table.entity_id', array('carrier' => 'GROUP_CONCAT(COALESCE(t.title, \'\') SEPARATOR \',\')', 'track_number' => 'GROUP_CONCAT(COALESCE(t.track_number, \'\') SEPARATOR \',\')'));
-		$orders->getSelect()->group(array('main_table.entity_id', 'main_table.codisto_orderid', 'main_table.status'));
+		$orders->getSelect()->group(array('main_table.entity_id', 'main_table.codisto_orderid', 'main_table.codisto_merchantid', 'main_table.status'));
 
 		$orders->setOrder('entity_id', 'ASC');
 
@@ -2494,7 +2826,8 @@ class Codisto_Sync_Model_Sync
 		$db->exec('CREATE TABLE IF NOT EXISTS Attribute (ID integer NOT NULL PRIMARY KEY, Code text NOT NULL, Label text NOT NULL, Type text NOT NULL, Input text NOT NULL)');
 		$db->exec('CREATE TABLE IF NOT EXISTS AttributeGroupMap (AttributeID integer NOT NULL, GroupID integer NOT NULL, PRIMARY KEY(AttributeID, GroupID))');
 		$db->exec('CREATE TABLE IF NOT EXISTS AttributeGroup (ID integer NOT NULL PRIMARY KEY, Name text NOT NULL)');
-		$db->exec('CREATE TABLE IF NOT EXISTS ProductAttributeValue (ProductExternalReference text NOT NULL, AttributeID integer NOT NULL, Value any, PRIMARY KEY (ProductExternalReference, AttributeID))');
+		$db->exec('CREATE TABLE IF NOT EXISTS ProductAttributeValue (ProductExternalReference text NOT NULL, AttributeID integer NOT NULL, Value text, PRIMARY KEY (ProductExternalReference, AttributeID))');
+		$db->exec('CREATE TABLE IF NOT EXISTS ProductAttributeDefaultValue (ProductExternalReference text NOT NULL, AttributeID integer NOT NULL, Value text, PRIMARY KEY (ProductExternalReference, AttributeID))');
 
 		$db->exec('CREATE TABLE IF NOT EXISTS TaxClass (ID integer NOT NULL PRIMARY KEY, Type text NOT NULL, Name text NOT NULL)');
 		$db->exec('CREATE TABLE IF NOT EXISTS TaxCalculation(ID integer NOT NULL PRIMARY KEY, TaxRateID integer NOT NULL, TaxRuleID integer NOT NULL, ProductTaxClassID integer NOT NULL, CustomerTaxClassID integer NOT NULL)');
@@ -2505,7 +2838,7 @@ class Codisto_Sync_Model_Sync
 		$db->exec('CREATE TABLE IF NOT EXISTS Store(ID integer NOT NULL PRIMARY KEY, Code text NOT NULL, Name text NOT NULL, Currency text NOT NULL)');
 		$db->exec('CREATE TABLE IF NOT EXISTS StoreMerchant(StoreID integer NOT NULL, MerchantID integer NOT NULL, PRIMARY KEY (StoreID, MerchantID))');
 
-		$db->exec('CREATE TABLE IF NOT EXISTS [Order](ID integer NOT NULL PRIMARY KEY, Status text NOT NULL, PaymentDate datetime NULL, ShipmentDate datetime NULL, Carrier text NOT NULL, TrackingNumber text NOT NULL)');
+		$db->exec('CREATE TABLE IF NOT EXISTS [Order](ID integer NOT NULL PRIMARY KEY, Status text NOT NULL, PaymentDate datetime NULL, ShipmentDate datetime NULL, Carrier text NOT NULL, TrackingNumber text NOT NULL, ExternalReference text NOT NULL DEFAULT \'\', MerchantID text NOT NULL DEFAULT \'\')');
 
 		$db->exec('CREATE TABLE IF NOT EXISTS StaticBlock(BlockID integer NOT NULL PRIMARY KEY, Title text NOT NULL, Identifier text NOT NULL, Content text NOT NULL)');
 
@@ -2525,28 +2858,32 @@ class Codisto_Sync_Model_Sync
 
 		try
 		{
-			$db->exec('SELECT 1 FROM ProductAttributeValue WHERE ProductExternalReference IS NULL LIMIT 1');
+			$db->exec('SELECT 1 FROM [Order] WHERE ExternalReference IS NULL LIMIT 1');
 		}
 		catch(Exception $e)
 		{
-			$db->exec('CREATE TABLE NewProductAttributeValue (ProductExternalReference integer NOT NULL, AttributeID integer NOT NULL, Value any, PRIMARY KEY (ProductExternalReference, AttributeID))');
-			$db->exec('INSERT INTO NewProductAttributeValue SELECT ProductID, AttributeID, Value FROM ProductAttributeValue');
-			$db->exec('DROP TABLE ProductAttributeValue');
-			$db->exec('ALTER TABLE NewProductAttributeValue RENAME TO ProductAttributeValue');
+			$db->exec('ALTER TABLE [Order] ADD COLUMN ExternalReference text NOT NULL DEFAULT \'\'');
 		}
 
 		try
 		{
-			$db->exec('SELECT 1 FROM Store WHERE MerchantID IS NULL LIMIT 1');
-
-			$db->exec('CREATE TABLE NewStore(ID integer NOT NULL PRIMARY KEY, Code text NOT NULL, Name text NOT NULL)');
-			$db->exec('INSERT INTO NewStore SELECT ID, Code, Name FROM Store');
-			$db->exec('DROP TABLE Store');
-			$db->exec('ALTER TABLE NewStore RENAME TO Store');
+			$db->exec('SELECT 1 FROM [Order] WHERE MerchantID IS NULL LIMIT 1');
 		}
 		catch(Exception $e)
 		{
+			$db->exec('ALTER TABLE [Order] ADD COLUMN MerchantID text NOT NULL DEFAULT \'\'');
+		}
 
+		try
+		{
+			$db->exec('SELECT 1 FROM ProductAttributeValue WHERE ProductExternalReference IS NULL LIMIT 1');
+		}
+		catch(Exception $e)
+		{
+			$db->exec('CREATE TABLE NewProductAttributeValue (ProductExternalReference integer NOT NULL, AttributeID integer NOT NULL, Value text, PRIMARY KEY (ProductExternalReference, AttributeID))');
+			$db->exec('INSERT INTO NewProductAttributeValue SELECT ProductID, AttributeID, Value FROM ProductAttributeValue');
+			$db->exec('DROP TABLE ProductAttributeValue');
+			$db->exec('ALTER TABLE NewProductAttributeValue RENAME TO ProductAttributeValue');
 		}
 
 		try
@@ -2689,5 +3026,38 @@ class Codisto_Sync_Model_Sync
 		}
 
 		return $price;
+	}
+
+	private function FilesInDir($dir, $prefix = '')
+	{
+		$dir = rtrim($dir, '\\/');
+		$result = array();
+
+		try
+		{
+			if(is_dir($dir))
+			{
+				$scan = @scandir($dir);
+
+				if($scan !== false)
+				{
+					foreach ($scan as $f) {
+						if ($f !== '.' and $f !== '..') {
+							if (is_dir("$dir/$f")) {
+								$result = array_merge($result, $this->FilesInDir("$dir/$f", "$f/"));
+							} else {
+								$result[] = $prefix.$f;
+							}
+						}
+					}
+				}
+			}
+		}
+		catch(Exception $e)
+		{
+
+		}
+
+		return $result;
 	}
 }
