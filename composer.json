@@ -1,18 +1,5 @@
 {
-    "name": "OpenMageModuleFostering/codistoconnect",
-    "type": "magento-module",
-    "license": "Apache-2",
-    "homepage": "",
-    "description": "Codisto eBay plugin
- 
-List all your magento products on eBay without the hassle. Skyrocket your sales.",
-    "authors": [
-    {
-        "name": "Codisto",
-        "email": "ebay@codisto.com"
-    }
-],
-    "suggest": {
-        "magento-hackathon/magento-composer-installer": "*"
-    }
+    "keywords": [
+        "openmage-module"
+    ]
 }
